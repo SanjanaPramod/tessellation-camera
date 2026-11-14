@@ -21,7 +21,7 @@ button:focus-visible{outline:3px solid #fff;outline-offset:2px}
 .dock{position:fixed;left:0;right:0;bottom:0;z-index:5;padding:14px 14px calc(env(safe-area-inset-bottom,0px) + 14px);background:linear-gradient(transparent,rgba(7,26,74,.88) 38%)}
 .seg{display:flex;width:max-content;margin:0 auto 10px;border:1px solid rgba(183,205,245,.45);border-radius:999px;overflow:hidden;background:rgba(7,26,74,.7)}
 .seg button{border:0;background:none;color:var(--mist);padding:9px 20px;font:600 14px Outfit,system-ui,sans-serif;cursor:pointer}
-.seg button[aria-pressed=true]{background:var(--mist);color:var(--ink)}
+#shapes{max-width:100%;overflow-x:auto}#shapes button{padding:8px 11px;white-space:nowrap}.seg button[aria-pressed=true]{background:var(--mist);color:var(--ink)}
 .row{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .mid{flex:1;display:flex;flex-direction:column;gap:4px;font-size:13px;min-width:0}
 .mid label{display:flex;justify-content:space-between}
@@ -56,6 +56,7 @@ input[type=range]{width:100%;accent-color:#b7cdf5;margin:2px 0}
     <button id="mCover" aria-pressed="true">Cover</button>
     <button id="mStick" aria-pressed="false">Sticker</button>
   </div>
+  <div class="seg" id="shapes" style="display:none" role="group" aria-label="Sticker shape"><button data-s="circle" aria-pressed="true">Circle</button><button data-s="square" aria-pressed="false">Square</button><button data-s="star" aria-pressed="false">Star</button><button data-s="heart" aria-pressed="false">Heart</button><button id="fitBtn" aria-pressed="true">Fit to object: on</button></div>
   <div class="row">
     <button class="side" id="galBtn" aria-label="Open saved photos">Saved</button>
     <div class="mid">
@@ -100,32 +101,31 @@ const TEX="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUEBAQEAwUEBA
 const $=id=>document.getElementById(id);
 const out=$('out'),ctx=out.getContext('2d'),video=$('v');
 let W=0,H=0,D=1,facing='environment',stream=null,mode='cover';
-
-/* seamless tile: mirror the artwork 2x2 */
 const img=new Image();let tile=null;
 img.onload=()=>{tile=document.createElement('canvas');tile.width=tile.height=1024;const t=tile.getContext('2d'),h=512;
  [[0,0,1,1],[1,0,-1,1],[0,1,1,-1],[1,1,-1,-1]].forEach(([i,j,sx,sy])=>{t.save();t.translate((i+(sx<0?1:0))*h,(j+(sy<0?1:0))*h);t.scale(sx,sy);t.drawImage(img,0,0,h,h);t.restore()})};
 img.src=TEX;
-
-/* layers */
 const pl=document.createElement('canvas'),plc=pl.getContext('2d');
 const sc=document.createElement('canvas'),scc=sc.getContext('2d',{willReadFrequently:true});
 const mc=document.createElement('canvas'),mcc=mc.getContext('2d');
-let SW=160,SH=200,hasMask=false;
+let SW=256,SH=320,acc=new Float32Array(1),raw=new Uint8Array(1),tmp=new Float32Array(1),inn=new Float32Array(1);
+let seed={x:.5,y:.5},seedCol=null,frame=0,hasMask=false,seg=null,segFail=false,segErr=0,meanL=0,lastSeg=0;
+const obj={cx:.5,cy:.5,size:.5,init:false};
+const stk={x:.5,y:.5,r:130,a:0};let shape='circle',fitOn=true;
 function fit(){W=innerWidth;H=innerHeight;D=Math.min(2,devicePixelRatio||1);
  out.width=pl.width=Math.round(W*D);out.height=pl.height=Math.round(H*D);
- SW=160;SH=Math.round(SW*H/W);sc.width=mc.width=SW;sc.height=mc.height=SH;placeXH()}
+ SW=256;SH=Math.round(SW*H/W);sc.width=mc.width=SW;sc.height=mc.height=SH;
+ const n=SW*SH;acc=new Float32Array(n);raw=new Uint8Array(n);tmp=new Float32Array(n);inn=new Float32Array(n);obj.init=false;placeXH()}
 addEventListener('resize',fit);
-
-/* state */
-let seed={x:.5,y:.5},seedCol=null,frame=0;
-const stk={x:.5,y:.5,r:130,a:0};
 function placeXH(){const x=$('xh');x.style.left=seed.x*W+'px';x.style.top=seed.y*H+'px'}
+function hint(){$('hintTxt').textContent=!seg?(segFail?'Basic detection. Tap the object to wrap it.':'Loading object detection...'):mode==='cover'?'Aim at an object, then tap it to wrap it.':'Drag the sticker onto an object. Pinch to resize and turn.';
+ $('fit').style.display=$('fitL').style.display=segFail?'':'none'}
 function setMode(m){mode=m;$('mCover').setAttribute('aria-pressed',m==='cover');$('mStick').setAttribute('aria-pressed',m==='sticker');
- $('xh').style.display=m==='cover'?'block':'none';$('fit').style.display=$('fitL').style.display=m==='cover'?'':'none';
- $('hintTxt').textContent=m==='cover'?'Aim the circle at an object. Tap to pick another spot.':'Drag the sticker. Pinch to resize and turn.'}
-$('mCover').onclick=()=>setMode('cover');$('mStick').onclick=()=>setMode('sticker');setMode('cover');
-
+ $('xh').style.display=m==='cover'?'block':'none';$('shapes').style.display=m==='sticker'?'flex':'none';hint()}
+$('mCover').onclick=()=>setMode('cover');$('mStick').onclick=()=>setMode('sticker');
+document.querySelectorAll('#shapes [data-s]').forEach(b=>b.onclick=()=>{shape=b.dataset.s;document.querySelectorAll('#shapes [data-s]').forEach(x=>x.setAttribute('aria-pressed',x===b))});
+$('fitBtn').onclick=()=>{fitOn=!fitOn;$('fitBtn').textContent='Fit to object: '+(fitOn?'on':'off');$('fitBtn').setAttribute('aria-pressed',fitOn)};
+setMode('cover');
 /* camera */
 async function startCam(){
  try{if(stream)stream.getTracks().forEach(t=>t.stop());
@@ -182,6 +182,79 @@ function loop(){requestAnimationFrame(loop);
  if(mode==='cover'){if(frame++%2===0)grow();if(hasMask&&tile){ctx.globalAlpha=.96;ctx.drawImage(pl,0,0);ctx.globalAlpha=1}}
  else drawSticker()}
 
+/* object detection: MediaPipe interactive segmenter, with a colour-based fallback */
+const VER='0.10.14',MODEL='https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite';
+async function initSeg(){try{
+ const m=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@'+VER+'/+esm');
+ const fs=await m.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@'+VER+'/wasm');
+ const o=d=>({baseOptions:{modelAssetPath:MODEL,delegate:d},outputCategoryMask:true,outputConfidenceMasks:false});
+ try{seg=await m.InteractiveSegmenter.createFromOptions(fs,o('GPU'))}catch(e){seg=await m.InteractiveSegmenter.createFromOptions(fs,o('CPU'))}
+ acc.fill(0);hint()}catch(e){seg=null;segFail=true;hint()}}
+function runSeg(now){if(now-lastSeg<100)return;lastSeg=now;
+ try{seg.segment(sc,{keypoint:{x:seed.x,y:seed.y}},res=>{const cm=res.categoryMask,a=cm.getAsUint8Array(),mw=cm.width,mh=cm.height;let c=0;
+  for(let y=0;y<SH;y++){const sy=Math.min(mh-1,(y*mh/SH)|0);for(let x=0;x<SW;x++){const v=a[sy*mw+Math.min(mw-1,(x*mw/SW)|0)]?1:0;raw[y*SW+x]=v;c+=v}}
+  const si=Math.min(SH-1,seed.y*SH|0)*SW+Math.min(SW-1,seed.x*SW|0);
+  if(!raw[si]&&c>SW*SH*.5)for(let p=0;p<raw.length;p++)raw[p]^=1});segErr=0}
+ catch(e){if(++segErr>6){seg=null;segFail=true;hint()}}}
+function flood(d){const n=SW*SH,px=Math.min(SW-1,Math.max(0,seed.x*SW|0)),py=Math.min(SH-1,Math.max(0,seed.y*SH|0));
+ let r=0,g=0,b=0,c=0;
+ for(let j=-2;j<=2;j++)for(let i=-2;i<=2;i++){const x=Math.min(SW-1,Math.max(0,px+i)),y=Math.min(SH-1,Math.max(0,py+j)),k=(y*SW+x)*4;r+=d[k];g+=d[k+1];b+=d[k+2];c++}
+ r/=c;g/=c;b/=c;if(!seedCol)seedCol=[r,g,b];else{seedCol[0]+=(r-seedCol[0])*.05;seedCol[1]+=(g-seedCol[1])*.05;seedCol[2]+=(b-seedCol[2])*.05}
+ const tol=parseFloat($('fit').value)*3,[sr,sg,sb]=seedCol,q=new Int32Array(n);let h=0,t=0;raw.fill(0);q[t++]=py*SW+px;raw[py*SW+px]=1;
+ while(h<t){const p=q[h++],x=p%SW,y=(p/SW)|0;
+  for(let o=0;o<4;o++){const nx=x+(o===0?1:o===1?-1:0),ny=y+(o===2?1:o===3?-1:0);if(nx<0||ny<0||nx>=SW||ny>=SH)continue;
+   const np=ny*SW+nx;if(raw[np])continue;const k=np*4;
+   if(Math.abs(d[k]-sr)+Math.abs(d[k+1]-sg)+Math.abs(d[k+2]-sb)<tol){raw[np]=1;q[t++]=np}}}}
+
+/* smooth the mask over time, work out object centre/size, and build the shading layer */
+function blur(src,dst,horiz){const r=3;for(let y=0;y<SH;y++)for(let x=0;x<SW;x++){let s=0,c=0;
+ for(let i=-r;i<=r;i++){const xx=horiz?x+i:x,yy=horiz?y:y+i;if(xx>=0&&xx<SW&&yy>=0&&yy<SH){s+=src[yy*SW+xx];c++}}dst[y*SW+x]=s/c}}
+function buildMask(d){const n=SW*SH;
+ for(let p=0;p<n;p++)acc[p]+=(raw[p]-acc[p])*.4;
+ let area=0,sx=0,sy=0,ls=0;
+ for(let p=0;p<n;p++)if(acc[p]>.5){area++;sx+=p%SW;sy+=(p/SW)|0;const k=p*4;ls+=d[k]*.3+d[k+1]*.59+d[k+2]*.11}
+ hasMask=area>60;if(!hasMask)return false;
+ const cx=sx/area/SW,cy=sy/area/SH,sz=Math.sqrt(area/n);
+ if(!obj.init){obj.cx=cx;obj.cy=cy;obj.size=sz;meanL=ls/area;obj.init=true}
+ else{obj.cx+=(cx-obj.cx)*.25;obj.cy+=(cy-obj.cy)*.25;obj.size+=(sz-obj.size)*.25;meanL+=(ls/area-meanL)*.2}
+ blur(acc,tmp,true);blur(tmp,inn,false);
+ const o=mcc.createImageData(SW,SH),od=o.data,ml=meanL||1;
+ for(let p=0;p<n;p++){const a=acc[p],al=Math.min(1,Math.max(0,(a-.35)/.3));if(!al)continue;const k=p*4;
+  const l=(d[k]*.3+d[k+1]*.59+d[k+2]*.11)/ml,s=Math.min(255,Math.max(70,215*l))*(.72+.28*Math.min(1,Math.max(0,inn[p]*1.7-.2)));
+  od[k]=od[k+1]=od[k+2]=s;od[k+3]=al*255}
+ mcc.putImageData(o,0,0);return true}
+function compose(fill){plc.globalCompositeOperation='source-over';plc.clearRect(0,0,pl.width,pl.height);fill(plc);
+ plc.globalCompositeOperation='multiply';plc.drawImage(mc,0,0,pl.width,pl.height);
+ plc.globalCompositeOperation='destination-in';plc.drawImage(mc,0,0,pl.width,pl.height);plc.globalCompositeOperation='source-over'}
+const tilePx=f=>Math.max(40,D*(parseFloat($('psz').value)/170)*f*Math.sqrt(W*H));
+function patFill(c,ox,oy,tp){if(!tile)return;const k=tp/1024;c.save();c.translate(ox,oy);c.scale(k,k);c.fillStyle=c.createPattern(tile,'repeat');c.fillRect(-ox/k,-oy/k,pl.width/k,pl.height/k);c.restore()}
+
+/* sticker shapes */
+function shapePath(c,r){c.beginPath();
+ if(shape==='circle')c.arc(0,0,r,0,7);
+ else if(shape==='square'){const q=r*.2,s=r*.92;c.moveTo(-s+q,-s);c.arcTo(s,-s,s,s,q);c.arcTo(s,s,-s,s,q);c.arcTo(-s,s,-s,-s,q);c.arcTo(-s,-s,s,-s,q);c.closePath()}
+ else if(shape==='star'){for(let i=0;i<10;i++){const a=-Math.PI/2+i*Math.PI/5,rr=i%2?r*.5:r*1.05;c[i?'lineTo':'moveTo'](Math.cos(a)*rr,Math.sin(a)*rr)}c.closePath()}
+ else{c.moveTo(0,r*.9);c.bezierCurveTo(-r*1.3,r*.1,-r*.9,-r*.95,0,-r*.35);c.bezierCurveTo(r*.9,-r*.95,r*1.3,r*.1,0,r*.9);c.closePath()}}
+function stickerBody(c,w,h){const r=stk.r*D;c.save();c.translate(stk.x*w,stk.y*h);c.rotate(stk.a);shapePath(c,r);c.clip();
+ const k=D*parseFloat($('psz').value)*.8/1024;c.scale(k,k);c.fillStyle=tile?c.createPattern(tile,'repeat'):'#2a5bd7';c.fillRect(-r/k-30,-r/k-30,2*r/k+60,2*r/k+60);c.restore()}
+function stickerPlain(){const r=stk.r*D;ctx.save();ctx.translate(stk.x*out.width,stk.y*out.height);ctx.rotate(stk.a);
+ ctx.shadowColor='rgba(0,0,0,.45)';ctx.shadowBlur=18*D;ctx.shadowOffsetY=6*D;shapePath(ctx,r);ctx.lineJoin='round';ctx.lineWidth=14*D;ctx.strokeStyle='#fff';ctx.stroke();ctx.fillStyle='#fff';ctx.fill();ctx.restore();
+ stickerBody(ctx,out.width,out.height)}
+
+function loop(now){requestAnimationFrame(loop);now=now||performance.now();
+ if(!video.videoWidth||!W)return;
+ const[sx,sy,sw,sh]=crop();ctx.drawImage(video,sx,sy,sw,sh,0,0,out.width,out.height);
+ if(frame++%2===0){scc.drawImage(video,sx,sy,sw,sh,0,0,SW,SH);
+  if(mode==='sticker'){seed.x=stk.x;seed.y=stk.y}
+  const d=scc.getImageData(0,0,SW,SH).data;
+  if(seg)runSeg(now);else flood(d);
+  if(buildMask(d)){
+   if(mode==='cover'){compose(c=>patFill(c,obj.cx*pl.width,obj.cy*pl.height,tilePx(.5*obj.size)));
+    seed.x+=(obj.cx-seed.x)*.15;seed.y+=(obj.cy-seed.y)*.15;placeXH()}
+   else if(fitOn)compose(c=>stickerBody(c,pl.width,pl.height))}}
+ if(mode==='cover'){if(hasMask&&tile){ctx.globalAlpha=.96;ctx.drawImage(pl,0,0);ctx.globalAlpha=1}}
+ else if(fitOn&&hasMask)ctx.drawImage(pl,0,0);else stickerPlain()}
+
 /* gestures */
 const P=new Map();let moved=0,p0=null;
 out.addEventListener('pointerdown',e=>{out.setPointerCapture(e.pointerId);P.set(e.pointerId,{x:e.clientX,y:e.clientY});moved=0;
@@ -191,7 +264,7 @@ out.addEventListener('pointermove',e=>{const p=P.get(e.pointerId);if(!p)return;c
  if(P.size===2&&p0){const[a,b]=[...P.values()];stk.r=Math.min(400,Math.max(40,p0.r*Math.hypot(a.x-b.x,a.y-b.y)/p0.d));stk.a=p0.ra+Math.atan2(b.y-a.y,b.x-a.x)-p0.a}
  else{stk.x+=dx/W;stk.y+=dy/H}});
 const up=e=>{const p=P.get(e.pointerId);P.delete(e.pointerId);
- if(p&&mode==='cover'&&moved<10&&P.size===0&&e.type==='pointerup'){seed={x:e.clientX/W,y:e.clientY/H};seedCol=null;placeXH()}};
+ if(p&&mode==='cover'&&moved<10&&P.size===0&&e.type==='pointerup'){seed={x:e.clientX/W,y:e.clientY/H};seedCol=null;acc.fill(0);raw.fill(0);obj.init=false;placeXH()}};
 out.addEventListener('pointerup',up);out.addEventListener('pointercancel',up);
 
 /* QR */
@@ -220,7 +293,7 @@ $('saveBtn').onclick=async()=>{const blob=await(await fetch(ourl)).blob(),name='
  try{const f=new File([blob],name,{type:'image/jpeg'});if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f]});return}}catch(e){}
  const a=document.createElement('a');a.href=ourl;a.download=name;a.click();toast('If nothing downloaded, press and hold the photo')};
 
-fit();openDB().then(thumb);startCam();loop();
+fit();openDB().then(thumb);startCam();requestAnimationFrame(loop);initSeg();
 </script>
 </body>
 </html>
